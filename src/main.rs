@@ -5,14 +5,14 @@ use std::{
     io::BufReader,
     ops::Sub,
     path::Path,
-    time::{Duration, Instant},
+    time::{Duration, Instant}, sync::{mpsc::{channel, Receiver}, Arc},
 };
 
 use anyhow::Result;
-use binance::{api::Binance, market::Market, model::SymbolPrice};
+use binance::{api::Binance, market::Market, model::SymbolPrice, errors::Result as BinanceResult};
 use rodio::{source::Buffered, Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
-const UPDATE_INTERVAL: Duration = Duration::from_millis(1000);
+const UPDATE_INTERVAL: Duration = Duration::from_millis(1500);
 
 fn main() {
     // ====================== ARGUMENT PROCESSING ======================
@@ -33,8 +33,9 @@ fn main() {
     };
 
     // ====================== PREPARE THE TRIGGERS ======================
-    let market = Market::new(None, None);
+    let market = Arc::new(Market::new(None, None));
     let price = market.get_price(symbol).unwrap();
+    let mut live_price = LivePrice::new(market.clone(), price.symbol);
 
     // Split trigger prices into two arrays for easier comparing.
     // If the trigger is the same as the current price it will get filtered
@@ -47,25 +48,26 @@ fn main() {
         let elapsed = time.elapsed();
 
         if elapsed >= UPDATE_INTERVAL {
-            let last_price = market.get_price(symbol).unwrap();
+            // Add to different thread Price parsing
+            let last_price = live_price.get_live_price();
 
             if !higher.is_empty() {
-                if last_price.price >= **higher.first().unwrap() {
+                if last_price >= **higher.first().unwrap() {
                     alerter
                         .output_alert(
-                            last_price.symbol.clone(),
+                            symbol.clone(),
                             **higher.first().unwrap(),
                             TriggerCause::BreakAboveEq,
                         )
                         .unwrap();
                     higher.remove(0);
                 }
-            } 
+            }
             if !lower.is_empty() {
-                if last_price.price <= **lower.last().unwrap() {
+                if last_price <= **lower.last().unwrap() {
                     alerter
                         .output_alert(
-                            last_price.symbol.clone(),
+                            symbol.clone(),
                             **lower.last().unwrap(),
                             TriggerCause::BreakBelowEq,
                         )
@@ -76,8 +78,47 @@ fn main() {
 
             time = Instant::now();
         } else {
+            println!("slep {} {}", UPDATE_INTERVAL.sub(elapsed).as_secs(), elapsed.as_millis());
             std::thread::sleep(UPDATE_INTERVAL.sub(elapsed));
         }
+        println!("now");
+    }
+}
+
+struct LivePrice {
+    last_price: f64,
+    receiver: Receiver<BinanceResult<SymbolPrice>>
+}
+
+impl LivePrice {
+    fn new(market: Arc<Market>, symbol: String) -> Self {
+        Self {
+            last_price: f64::NAN,
+            receiver: Self::spawn_price_tracker(market, symbol),
+        }
+    }
+
+    fn get_live_price(&mut self) -> f64 {
+        if let Ok(price) = self.receiver.try_recv() {
+            self.last_price = price.unwrap().price;
+        }
+
+        self.last_price
+    }
+
+    fn spawn_price_tracker(market: Arc<Market>, symbol: String) -> Receiver<BinanceResult<SymbolPrice>> {
+        let (tx, rx) = channel();
+
+        std::thread::spawn(move || loop {
+            let price = market.get_price(&symbol);
+
+            match tx.send(price) {
+                Ok(_) => std::thread::sleep(UPDATE_INTERVAL),
+                Err(err) => panic!("Live Price Thread Error {err}"),
+            }
+        });
+
+        rx
     }
 }
 
@@ -103,6 +144,7 @@ impl Alerter {
 
         println!("❗❗❗ NEW ALERT for {symbol} ❗❗❗");
 
+        // BOLD And Italic the messages
         let message = match cause {
             TriggerCause::BreakAboveEq => format!(
                 "> The price of {symbol} broke over the \
