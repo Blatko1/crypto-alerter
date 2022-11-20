@@ -1,4 +1,4 @@
-use clap::{Arg, ArgMatches, Command, ArgAction};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 
 pub fn parse_args() -> ArgMatches {
     Command::new("Crypto Alerter")
@@ -13,7 +13,14 @@ pub fn parse_args() -> ArgMatches {
             Arg::new("sfx")
                 .long("sound")
                 .short('s')
+                .alias("sfx")
                 .help("Provide a sound file to play at each alert"),
-        ).arg(Arg::new("price_trigger").action(ArgAction::Append).value_parser(clap::value_parser!(f64)).required(true))
+        )
+        .arg(
+            Arg::new("price_trigger")
+                .action(ArgAction::Append)
+                .value_parser(clap::value_parser!(f64))
+                .required(true),
+        )
         .get_matches()
 }
