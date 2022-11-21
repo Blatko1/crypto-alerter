@@ -1,6 +1,6 @@
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
-pub fn parse_args() -> ArgMatches {
+pub fn cmd() -> Command {
     Command::new("Crypto Alerter")
         .author("Blatko(Leon)")
         .version("1.0")
@@ -22,5 +22,4 @@ pub fn parse_args() -> ArgMatches {
                 .value_parser(clap::value_parser!(f64))
                 .required(true),
         )
-        .get_matches()
 }

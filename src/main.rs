@@ -5,18 +5,22 @@ use std::{
     io::BufReader,
     ops::Sub,
     path::Path,
-    time::{Duration, Instant}, sync::{mpsc::{channel, Receiver}, Arc},
+    sync::{
+        mpsc::{channel, Receiver},
+        Arc,
+    },
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
-use binance::{api::Binance, market::Market, model::SymbolPrice, errors::Result as BinanceResult};
+use binance::{api::Binance, errors::Result as BinanceResult, market::Market, model::SymbolPrice};
 use rodio::{source::Buffered, Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(1500);
 
 fn main() {
     // ====================== ARGUMENT PROCESSING ======================
-    let matches = cli::parse_args();
+    let matches = cli::cmd().get_matches();
 
     let symbol = matches.get_one::<String>("symbol").unwrap();
     let mut triggers: Vec<f64> = matches
@@ -49,7 +53,7 @@ fn main() {
 
         if elapsed >= UPDATE_INTERVAL {
             // Add to different thread Price parsing
-            let last_price = live_price.get_live_price();
+            let last_price = live_price.last_price();
 
             if !higher.is_empty() {
                 if last_price >= **higher.first().unwrap() {
@@ -78,49 +82,49 @@ fn main() {
 
             time = Instant::now();
         } else {
-            println!("slep {} {}", UPDATE_INTERVAL.sub(elapsed).as_secs(), elapsed.as_millis());
             std::thread::sleep(UPDATE_INTERVAL.sub(elapsed));
         }
-        println!("now");
     }
 }
 
 struct LivePrice {
-    last_price: f64,
-    receiver: Receiver<BinanceResult<SymbolPrice>>
+    last_price: Price,
+    receiver: Receiver<BinanceResult<SymbolPrice>>,
 }
 
 impl LivePrice {
     fn new(market: Arc<Market>, symbol: String) -> Self {
         Self {
-            last_price: f64::NAN,
+            last_price: Price::NAN,
             receiver: Self::spawn_price_tracker(market, symbol),
         }
     }
 
-    fn get_live_price(&mut self) -> f64 {
+    fn last_price(&mut self) -> Price {
         if let Ok(price) = self.receiver.try_recv() {
             self.last_price = price.unwrap().price;
         }
-
         self.last_price
     }
 
-    fn spawn_price_tracker(market: Arc<Market>, symbol: String) -> Receiver<BinanceResult<SymbolPrice>> {
+    fn spawn_price_tracker(
+        market: Arc<Market>,
+        symbol: String,
+    ) -> Receiver<BinanceResult<SymbolPrice>> {
         let (tx, rx) = channel();
-
         std::thread::spawn(move || loop {
             let price = market.get_price(&symbol);
-
             match tx.send(price) {
                 Ok(_) => std::thread::sleep(UPDATE_INTERVAL),
-                Err(err) => panic!("Live Price Thread Error {err}"),
+                Err(err) => println!("Price Reader thread error: {err}"),
             }
         });
-
         rx
     }
 }
+
+/// Represents a price level.
+type Price = f64;
 
 struct Alerter {
     player: Option<SoundPlayer>,
@@ -216,4 +220,15 @@ type SoundSource = Buffered<Decoder<BufReader<File>>>;
 enum TriggerCause {
     BreakAboveEq,
     BreakBelowEq,
+}
+
+#[test]
+fn arg_test() {
+    let args = vec!["alerter", "ETHUSDT", "--sfx", "sounds/soundw.wav", "1000"];
+    let matches = cli::cmd().get_matches_from(args);
+}
+
+#[test]
+fn cmd_debug() {
+    cli::cmd().debug_assert();
 }
